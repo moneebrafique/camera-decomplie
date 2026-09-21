@@ -1,0 +1,68 @@
+name: Decompile and search GoogleCamera.apk
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'The tag of the GitHub Release that has GoogleCamera.apk attached (e.g. v1)'
+        required: true
+        default: 'v1'
+
+jobs:
+  decompile:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Download GoogleCamera.apk from the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "${{ github.event.inputs.release_tag }}" \
+            --repo "${{ github.repository }}" \
+            --pattern "GoogleCamera.apk" \
+            --output GoogleCamera.apk
+
+      - name: Download apktool (latest release, resolved dynamically)
+        run: |
+          URL=$(curl -sSL https://api.github.com/repos/iBotPeaches/Apktool/releases/latest \
+            | grep "browser_download_url.*\.jar" \
+            | cut -d '"' -f 4)
+          echo "Downloading $URL"
+          curl -sSL -o apktool.jar "$URL"
+
+      - name: Decompile (smali only, skip resources to save time/space)
+        run: |
+          java -jar apktool.jar d GoogleCamera.apk -o decompiled -r -s
+
+      - name: Search for known resource-id names across all smali files
+        run: |
+          mkdir -p search-results
+          for name in thumbnail_button uncovered_preview_layout shutter_button camera_switch_button; do
+            echo "===== $name =====" >> search-results/matches.txt
+            grep -rl "\"$name\"" decompiled/ >> search-results/matches.txt || echo "(no matches)" >> search-results/matches.txt
+            echo "" >> search-results/matches.txt
+          done
+          echo "----- Also checking public.xml for numeric IDs -----" >> search-results/matches.txt
+          find decompiled -name "public.xml" -exec grep -H -E "thumbnail_button|uncovered_preview_layout|shutter_button|camera_switch_button" {} \; >> search-results/matches.txt || true
+          cat search-results/matches.txt
+
+      - name: Upload search results
+        uses: actions/upload-artifact@v4
+        with:
+          name: search-results
+          path: search-results/matches.txt
+
+      - name: Upload decompiled resource IDs listing (small, safe to inspect)
+        run: |
+          find decompiled -name "public.xml" -exec cp {} search-results/public.xml \; || echo "no public.xml found" > search-results/public.xml
+
+      - name: Upload public.xml
+        uses: actions/upload-artifact@v4
+        with:
+          name: public-xml
+          path: search-results/public.xml
